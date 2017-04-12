@@ -12,6 +12,36 @@
 using namespace cv;
 using namespace std;
 
+#include <cmath>
+
+#ifndef PI
+const double PI = 3.14159265358979323846;
+#endif
+const double TWOPI = 2.0*PI;
+
+/**
+ * Normalize angle to be within the interval [-pi,pi].
+ */
+inline double standardRad(double t) {
+  if (t >= 0.) {
+    t = fmod(t+PI, TWOPI) - PI;
+  } else {
+    t = fmod(t-PI, -TWOPI) + PI;
+  }
+  return t;
+}
+
+/**
+ * Convert rotation matrix to Euler angles
+ */
+void wRo_to_euler(const Eigen::Matrix3d& wRo, double& yaw, double& pitch, double& roll) {
+    yaw = standardRad(atan2(wRo(1,0), wRo(0,0)));
+    double c = cos(yaw);
+    double s = sin(yaw);
+    pitch = standardRad(atan2(-wRo(2,0), wRo(0,0)*c + wRo(1,0)*s));
+    roll  = standardRad(atan2(wRo(0,2)*s - wRo(1,2)*c, -wRo(0,1)*s + wRo(1,1)*c));
+}
+
 
 //g++ `pkg-config --cflags opencv` pongDetector.cpp `pkg-config --libs opencv` -o detect; ./detect 
 
@@ -23,7 +53,7 @@ class cupDetector {
   AprilTags::TagCodes m_tagCodes;
 
   bool m_draw; // draw image and April tag detections?
-  bool m_arduino; // send tag detections to serial port?
+  bool m_usb; // send tag detections to serial port?
   bool m_timing; // print timing information for each tag extraction call
 
   int m_width; // image size in pixels
@@ -48,12 +78,12 @@ public:
     m_tagCodes(AprilTags::tagCodes36h11),
 
     m_draw(true),
-    m_arduino(false),
+    m_usb(true),
     m_timing(false),
 
     m_width(640),
     m_height(480),
-    m_tagSize(0.166), // TODO
+    m_tagSize(0.0448), // TODO
     m_fx(600),
     m_fy(600),
     m_px(m_width/2),
@@ -66,11 +96,11 @@ public:
 
     // prepare window for drawing the camera images
     if (m_draw) {
-      namedWindow(windowName, WINDOW_NORMAL);
+      namedWindow(windowName, WINDOW_AUTOSIZE);
     }
 
     // optional: prepare serial port for communication with Arduino
-    if (m_arduino) {
+    if (m_usb) {
       m_serial.open("/dev/ttyACM0");
     }
   }
@@ -82,13 +112,57 @@ public:
         cout << "Error opening video" << endl;
         exit(1);
     }
+  }
 
+  void print_detection(AprilTags::TagDetection& detection) const {
+    cout << "  Id: " << detection.id
+         << " (Hamming: " << detection.hammingDistance << ")";
+
+    // recovering the relative pose of a tag:
+
+    // NOTE: for this to be accurate, it is necessary to use the
+    // actual camera parameters here as well as the actual tag size
+    // (m_fx, m_fy, m_px, m_py, m_tagSize)
+
+    Eigen::Vector3d translation;
+    Eigen::Matrix3d rotation;
+    detection.getRelativeTranslationRotation(m_tagSize, m_fx, m_fy, m_px, m_py,
+                                             translation, rotation);
+
+    Eigen::Matrix3d F;
+    F <<
+      1, 0,  0,
+      0,  -1,  0,
+      0,  0,  1;
+    Eigen::Matrix3d fixed_rot = F*rotation;
+    double yaw, pitch, roll;
+    wRo_to_euler(fixed_rot, yaw, pitch, roll);
+
+    cout << "  distance=" << translation.norm()
+         << "m, x=" << translation(0)
+         << ", y=" << translation(1)
+         << ", z=" << translation(2)
+         << ", yaw=" << yaw
+         << ", pitch=" << pitch
+         << ", roll=" << roll
+         << endl;
+
+    // Also note that for SLAM/multi-view application it is better to
+    // use reprojection error of corner points, because the noise in
+    // this relative pose is very non-Gaussian; see iSAM source code
+    // for suitable factors.
   }
 
   void TagExtraction(Mat& frame, Mat& frame_gray) {
 
     vector<AprilTags::TagDetection> detections = m_tagDetector->extractTags(frame_gray);
+
+     // print out each detection
     cout << detections.size() << " tags detected:" << endl;
+    for (int i=0; i<detections.size(); i++) {
+      print_detection(detections[i]);
+    }
+
 
     // show the current frame including any detections
     if (m_draw) {
@@ -98,7 +172,15 @@ public:
         }
         imshow(windowName, frame); // OpenCV call
       }
+
+    if (m_usb) {
+      for (int i = 0; i < detections.size(); ++i) {
+        m_serial.print(detections[i].id);
+        m_serial.print(",");
+        m_serial.print("\n");
+      } 
     }
+}
 
   // The processing loop where images are retrieved, tags detected,
   // and information about detections generated
@@ -117,35 +199,20 @@ public:
       //convert to grayscale
       cvtColor(frame, frame_gray, CV_RGB2GRAY);
 
-
       //Tag Extraction
       TagExtraction(frame, frame_gray);
-
-
-
-      imshow(windowName, frame);
-
-
      
-
-
       // End of video feed
       if (frame.empty()) break;
 
       // exit if any key is pressed
       if (waitKey(10) == 27) break;
 
-      // wait 1 second before next frame capture
-      //sleep(1); 
+      // wait x seconds before next frame capture
+      sleep(30); 
     }
   }
 };
-
-
-
-
-
-
 
 
 int main()
