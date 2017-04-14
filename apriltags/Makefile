@@ -23,6 +23,8 @@ ifeq "$(BUILD_TYPE)" ""
 BUILD_TYPE="Release"
 endif
 
+CXXFLAGS=-g -std=c++11 -Wall -pedantic
+
 all: pod-build/Makefile
 	$(MAKE) -C pod-build all install
 
